@@ -9,6 +9,8 @@
 .. _BUILD: BUILD.rst 
 .. _here: https://github.com/Cisco-Talos/pyrebox/issues
 .. _scripts: https://github.com/Cisco-Talos/pyrebox/tree/master/scripts
+.. _readthedocs.io: https://pyrebox.readthedocs.io/en/latest/
+.. _questions: https://github.com/Cisco-Talos/pyrebox/issues?utf8=%E2%9C%93&q=is%3Aissue%20label%3Aquestion%20
 
 PyREBox is a Python scriptable Reverse Engineering sandbox. It is based on QEMU, and its goal is 
 to aid reverse engineering by providing dynamic analysis and debugging capabilities from a 
@@ -26,12 +28,70 @@ in C/C++, and implement several advanced features such as dynamic taint analysis
 or even record and replay of execution traces. With PyREBox, we aim to apply this technology focusing 
 on keeping the design simple, and on the usability of the system for threat analysts.
 
+What's new
+==========
+
+Remember to pull the latest version of PyREBox in order to enjoy its latest features. PyREBox is under
+active development and new cool features are yet to come!
+
+- [Mar 08, 2018] **Triggers are now called for every process in the system (not only monitored processes). See documentation**
+- [Mar 08, 2018] **Changed memory read/write callback parameters. See documentation and examples.** 
+- [Mar 08, 2018] Added physical memory address read/write breakpoints.
+- [Mar 08, 2018] Added module load and remove callbacks.
+- [Nov 02, 2017] Added guest agent for linux 32 and 64 bits.
+- [Oct 23, 2017] Added guest agent for Windows 32 and 64 bits.
+- [Oct 11, 2017] Added linux module symbol parsing.
+- [Sep 22, 2017] Added support for module reloading.
+- [Sep 20, 2017] Added custom function callback to BP class.
+- [Sep 20, 2017] Upgraded to Qemu v2.10.0.
+- [Aug 31, 2017] Partial support for linux guests.
+
+Install
+=======
+
+A build script is provided. For specific details about dependencies, please see BUILD_. We also provide a Dockerfile.
+
 Documentation
 =============
 
+The documentation of this project is hosted at readthedocs.io_.
 
-Goals
-=====
+Bugs, questions and support
+===========================
+
+If you think you've found a bug, please report it here_.
+
+Before creating a new issue, please go through the questions_ opened by other users before.
+
+This program is provided "AS IS", and no support is guaranteed. That said, in order to help
+us solve your issues, please include as much information as possible in order to reproduce the bug:
+
+- Operating system used to compile and run PyREBox.
+- The specific operating system version and emulation target you are using.
+- Shell command / script / task you were trying to run.
+- Any information about the error such as error messages, Python (or IPython) stack trace, or QEMU stack trace.
+- Any other relevant information
+
+Roadmap
+=======
+
+- VM image configuration and management console.
+- Support for ARM, MIPS, and other architectures.
+- Finish support for GNU/Linux guest systems (see issues).
+
+
+Starting a VM
+=============
+
+PyREBox is based on QEMU, so in order to start a VM withing PyREBox, you need to run it exactly as you
+were booting up a QEMU VM. A couple of example scripts are provided: ``start_i386.sh``, ``start_x86_64.sh``,
+you can use them as an example.
+
+The only QEMU monitor option supported currently is *stdio* (``-monitor stdio``).
+
+
+Goals of this project
+=====================
 
 - Provide a whole system emulation platform with a simple interface for inspecting the emulated guest system.
 
@@ -41,6 +101,7 @@ Goals
   * A Python based scripting engine, that allows to integrate into the scripts any of the security tools based on this language (one of the biggest ecosystems).
 - Have a clean design, de-coupled from QEMU. Many projects that are built over QEMU do not evolve when QEMU gets upgraded, missing new features and optimizations, as well as security updates. In order to achieve this, PyREBox is implemented as an independent module that can be compiled together with QEMU requiring a minimal set of modifications. 
 - Support for different architectures. Currently, PyREBox only supports Windows for x86 and x86-64 bit architectures, but its design allows to support other architectures such as ARM, MIPS, or PowerPC, and other operating systems as well.
+
 
 IPython shell
 =============
@@ -71,6 +132,7 @@ description of the API, see `Documentation`_ or type ``help(api)`` in the shell.
 
 .. image:: docs/media/stack.gif
 
+
 Scripting
 =========
 
@@ -88,32 +150,12 @@ limit the number of events that hit the python code, as well as to precompute va
 
 In this repository you will find example scripts_ that can help you to write your owncode . Contributions are welcome!
 
-Install
-=======
-
-A build script is provided. For specific details about dependencies, please see BUILD_. We also provide a Dockerfile.
-
-Starting a VM
-=============
-
-PyREBox is based on QEMU, so in order to start a VM withing PyREBox, you need to run it exactly as you
-were booting up a QEMU VM. A couple of example scripts are provided: ``start_i386.sh``, ``start_x86_64.sh``,
-you can use them as an example.
-
-The only QEMU monitor option supported currently is *stdio* (``-monitor stdio``).
-
-Roadmap
-=======
-
-- VM image configuration and management console.
-- Support for ARM, MIPS, and other architectures.
-- Support for GNU/Linux guest systems.
 
 Acknowledgement
 ===============
 
 First of all, PyREBox would not be possible without QEMU_ and Volatility_. We thank to their developers and
-mantainers for such a great work.
+maintainers for such a great work.
 
 PyREBox is inspired by several academic projects, such as DECAF_, or PANDA_. In fact, many of the callbacks
 supported by PyREBox are equivalent to those found in DECAF_, and the concepts behind the instrumentation
@@ -123,18 +165,3 @@ PyREBox benefits from third-party code, which can be found under the directory p
 For each third-party project, we include an indication of its original license, the original source
 code files taken from the project, as well as the modified versions of the source code files (if applicable),
 used by PyREBox. 
-
-
-Bugs and support
-================
-
-If you think you've found a bug, please report it here_.
-
-This program is provided "AS IS", and no support is guaranteed. That said, in order to help 
-us solve your issues, please include as much information as possible in order to reproduce the bug:
-
-- Operating system used to compile and run PyREBox.
-- The specific operating system version and emulation target you are using.
-- Shell command / script / task you were trying to run.
-- Any information about the error such as error messages, Python (or IPython) stack trace, or QEMU stack trace.
-- Any other relevant information

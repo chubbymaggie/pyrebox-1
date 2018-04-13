@@ -37,7 +37,7 @@ extern "C"{
 using namespace std;
 
 pyrebox_target_ulong kdbg_address = 0;
-unsigned long long tlb_counter = 0;
+static unsigned long long tlb_counter = 0;
 pyrebox_target_ulong ps_active_process_list;
 
 //Offset list taken from volatility overlays
@@ -100,10 +100,10 @@ pyrebox_target_ulong scan_kdbg(pyrebox_target_ulong pgd){
                 Py_DECREF(py_args);
                 if (addr){
                     if (arch_bits[os_index] == 32){
-                        kdbg = PyLong_AsLong(addr);
+                        kdbg = PyLong_AsUnsignedLong(addr);
                     }
                     else{
-                        kdbg = PyLong_AsLongLong(addr);
+                        kdbg = PyLong_AsUnsignedLongLong(addr);
                     }
                     Py_DECREF(addr);
                 }
@@ -117,8 +117,29 @@ pyrebox_target_ulong scan_kdbg(pyrebox_target_ulong pgd){
    return canonical_address(kdbg); 
 }
 
-void windows_vmi_init(os_index_t vol_profile){
-    utils_print_debug("[*] Searching for KDBG...\n");
+void windows_vmi_init(os_index_t os_index){
+   utils_print_debug("[*] Searching for KDBG...\n");
+
+   //Update the OS family in the Python VMI module
+   PyObject* py_module_name = PyString_FromString("vmi");
+   PyObject* py_vmi_module = PyImport_Import(py_module_name);
+   Py_DECREF(py_module_name);
+
+   if(py_vmi_module != NULL){
+       PyObject* py_setosfamily = PyObject_GetAttrString(py_vmi_module,"set_os_family_win");
+       if (py_setosfamily){
+           if (PyCallable_Check(py_setosfamily)){
+                PyObject* py_args = PyTuple_New(0);
+                PyObject* ret = PyObject_CallObject(py_setosfamily,py_args);
+                Py_DECREF(py_args);
+                if (ret){
+                    Py_DECREF(ret);
+                }
+           }
+           Py_XDECREF(py_setosfamily);
+       }
+       Py_DECREF(py_vmi_module);
+   }
 }
 
 void windows_vmi_context_change_callback(pyrebox_target_ulong old_pgd,pyrebox_target_ulong new_pgd, os_index_t os_index){
@@ -129,7 +150,7 @@ void windows_vmi_context_change_callback(pyrebox_target_ulong old_pgd,pyrebox_ta
         uint64_t exittime = 0;
         qemu_virtual_memory_rw_with_pgd(new_pgd,it->get_exittime_offset(),(uint8_t*)&exittime,EXIT_TIME_SIZE,0);
         if (exittime > 0){
-            to_remove.insert(it->get_pgd());
+            to_remove.insert(it->get_pid());
         }
     }
     for (set<pyrebox_target_ulong>::iterator it = to_remove.begin();it != to_remove.end(); ++it){
@@ -188,7 +209,7 @@ void windows_vmi_tlb_callback(pyrebox_target_ulong pgd, os_index_t os_index){
         }
     }
     //If the pgd is not in the list of processes, then we insert it.
-    if (is_process_in_list(pgd) < PROC_PRESENT){
+    if (is_process_pgd_in_list(pgd) < PROC_PRESENT){
         //Once kdbg is resolved, we can then start scanning processes
         if (kdbg_address != 0){
             qemu_virtual_memory_rw_with_pgd(pgd,kdbg_address + PS_ACTIVE_PROCESS_HEAD_OFFSET,(uint8_t*)&ps_active_process_list,sizeof(pyrebox_target_ulong),0);
@@ -204,7 +225,7 @@ void windows_vmi_tlb_callback(pyrebox_target_ulong pgd, os_index_t os_index){
                    pyrebox_target_ulong proc_pgd = 0;
                    qemu_virtual_memory_rw_with_pgd(pgd,cur_proc_base + eprocess_offsets[os_index][PGD],(uint8_t*)&proc_pgd,sizeof(pyrebox_target_ulong),0);
 
-                   int is_in_list = is_process_in_list(proc_pgd);
+                   int is_in_list = is_process_pgd_in_list(proc_pgd);
                    //This is the process we are looking for, or we need to initially populate the list
                    if (pgd == proc_pgd || (kdbg_found == 1 && is_in_list == PROC_NOT_PRESENT)) {
                        //Read Pid, ppid, name
@@ -223,10 +244,7 @@ void windows_vmi_tlb_callback(pyrebox_target_ulong pgd, os_index_t os_index){
                        if (exittime == 0){
                            if (is_in_list == PROC_NOT_PRESENT){
                                vmi_add_process(proc_pgd, pid, ppid, cur_proc_base, cur_proc_base + eprocess_offsets[os_index][EXIT_TIME],(char*) proc_name);
-                           }else if (is_in_list == PROC_UNDEFINED){
-                               vmi_remove_process(proc_pgd);
-                               vmi_add_process(proc_pgd, pid, ppid, cur_proc_base, cur_proc_base + eprocess_offsets[os_index][EXIT_TIME],(char*) proc_name);
-                           }
+                           }                       
                        }
                        //Force loop exit, only if we are not populating the list for the first time
                        if (kdbg_found == 0){

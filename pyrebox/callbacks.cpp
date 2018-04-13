@@ -45,6 +45,10 @@ extern "C" {
 //Handle counter. Starts at 1. 0 is the invalid handle
 callback_handle_t callback_handle_counter = 1;
 
+//Array of internal callbacks
+internal_callbacks_t internal_callbacks[MAX_INTERNAL_CALLBACKS];
+internal_callback_handle_t current_internal_callback_handle = 0;
+
 //CallbackManager class initialization 
 
 //Reference to callback manager
@@ -52,6 +56,11 @@ CallbackManager* cb_manager = 0;
 
 void InitCallbacks(){
     cb_manager = new CallbackManager();
+    for (int i = 0; i < MAX_INTERNAL_CALLBACKS; ++i){
+        internal_callbacks[i] = {.pgd = 0,
+                                 .pc = 0,
+                                 .callback_function = 0};
+    }
 }
 
 void FinalizeCallbacks(){
@@ -128,6 +137,21 @@ callback_handle_t add_callback(callback_type_t type, module_handle_t module_hand
 }
 
 //----------------------------------------------------------------------------------
+// Internal callback management functions
+//----------------------------------------------------------------------------------
+
+internal_callback_handle_t add_internal_callback(pyrebox_target_ulong pgd, pyrebox_target_ulong pc, callback_t callback_function){
+    //We already reached the maximum number of internal callbacks
+    if (current_internal_callback_handle < MAX_INTERNAL_CALLBACKS){
+        internal_callbacks[current_internal_callback_handle++] = {.pgd = pgd,
+                                                                .pc = pc,
+                                                                .callback_function = callback_function};
+        return (current_internal_callback_handle-1);
+    }
+    return (internal_callback_handle_t) -1;
+}
+
+//----------------------------------------------------------------------------------
 //Callback functions, that are delivered to their corresponding python callbacks
 //----------------------------------------------------------------------------------
 
@@ -166,7 +190,7 @@ void mem_read_callback(callback_params_t params)
 {
    if (cb_manager != 0)
    {
-    cb_manager->deliver_callback(MEM_READ_CB,params);
+    cb_manager->deliver_callback(MEM_READ_CB, params);
    }
 }
 
@@ -174,7 +198,7 @@ void mem_write_callback(callback_params_t params)
 {
    if (cb_manager != 0)
    {
-    cb_manager->deliver_callback(MEM_WRITE_CB,params);
+    cb_manager->deliver_callback(MEM_WRITE_CB, params);
    }
 }
 
@@ -215,7 +239,7 @@ void tlb_exec_callback(callback_params_t params)
    qemu_cpu_opaque_t cpu_opaque = params.tlb_exec_params.cpu;
    pyrebox_target_ulong cr3 = get_pgd(cpu_opaque);
    //VMI related actions
-   vmi_tlb_callback(cr3);
+   vmi_tlb_callback(cr3, params.tlb_exec_params.vaddr);
    
    //Deliver the python callbacks
    if (cb_manager != 0)
@@ -469,8 +493,8 @@ callback_handle_t CallbackManager::add_callback(callback_type_t type, module_han
     switch(type)
     {
         case OP_BLOCK_BEGIN_CB:
-            //Unless we are isntrumenting all block begins for that process, flush TB 
-            if (!(callbacks[BLOCK_BEGIN_CB].size() > 0 && is_monitored_process(pgd))){
+            //Unless we are isntrumenting all block begins, flush TB 
+            if (callbacks[BLOCK_BEGIN_CB].size() == 0){
                 pyrebox_flush_tb();
             }
             cb = (Callback*) new OptimizedBlockBeginCallback();
@@ -480,8 +504,8 @@ callback_handle_t CallbackManager::add_callback(callback_type_t type, module_han
             ((OptimizedBlockBeginCallback*)cb)->set_target_address(addr_block);
             break;
         case OP_INSN_BEGIN_CB:
-            //Unless we are isntrumenting all insn begins for that process, flush TB 
-            if (!(callbacks[INSN_BEGIN_CB].size() > 0 && is_monitored_process(pgd))){
+            //Unless we are isntrumenting all insn begins, flush TB 
+            if (callbacks[INSN_BEGIN_CB].size() == 0){
                 pyrebox_flush_tb();
             }
             cb = (Callback*) new OptimizedInsBeginCallback(); 
@@ -534,6 +558,17 @@ callback_handle_t CallbackManager::add_callback(callback_type_t type, module_han
 
 void CallbackManager::deliver_callback(callback_type_t type, callback_params_t params){
 
+    if (type == OP_INSN_BEGIN_CB || type == INSN_BEGIN_CB){
+        memory_address_t addr;
+        addr.address = get_cpu_addr(params.insn_begin_params.cpu);
+        addr.pgd = get_pgd(params.insn_begin_params.cpu);
+        //Deliver inmediately the internal callbacks 
+        for (int i = 0; i < MAX_INTERNAL_CALLBACKS && internal_callbacks[i].callback_function != 0; ++i){
+            if (internal_callbacks[i].pc == addr.address && (internal_callbacks[i].pgd == 0 || internal_callbacks[i].pgd == addr.pgd)){
+                internal_callbacks[i].callback_function(params);
+            }
+        }
+    }
     //Lock the python mutex
     pthread_mutex_lock(&pyrebox_mutex);
     fflush(stdout);
@@ -547,9 +582,12 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
     //We have 4 cases: Optimized insn begin, optimized block begin, opcode ranges, and regular callbacks (all get called)
     //Optimized and general versions are joined together
     if (type == OP_BLOCK_BEGIN_CB || type == BLOCK_BEGIN_CB){
+  
+        pyrebox_target_ulong pgd = get_pgd(params.block_begin_params.cpu);
 
+        // Check if process is monitored if there is no trigger
         for (multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[BLOCK_BEGIN_CB].begin(); it != this->callbacks[BLOCK_BEGIN_CB].end(); ++it){
-            if ((*it)->get_trigger() == 0 || (*it)->get_trigger()((*it)->get_handle(),params)){
+            if (((*it)->get_trigger() == 0 && is_monitored_process(pgd)) || ((*it)->get_trigger() != 0 && (*it)->get_trigger()((*it)->get_handle(),params))){
                 callbacks_needed.push_back((*it));
             }
         }
@@ -558,7 +596,7 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
         OptimizedBlockBeginCallback *cb = new OptimizedBlockBeginCallback();
         memory_address_t addr;
         addr.address = get_tb_addr(params.block_begin_params.tb);
-        addr.pgd = get_pgd(params.block_begin_params.cpu);
+        addr.pgd = pgd; 
         cb->set_target_address(addr);
         multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[OP_BLOCK_BEGIN_CB].lower_bound((Callback*)cb);
         delete cb;
@@ -572,19 +610,24 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
     //Optimized and general versions are joined together
     else if (type == OP_INSN_BEGIN_CB || type == INSN_BEGIN_CB){
 
+        memory_address_t addr;
+        addr.address = get_cpu_addr(params.insn_begin_params.cpu);
+        addr.pgd = get_pgd(params.insn_begin_params.cpu);
+
+
+        // Defer the python callbacks
+        // Check if process is monitored if there is no trigger
         for (multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[INSN_BEGIN_CB].begin(); it != this->callbacks[INSN_BEGIN_CB].end(); ++it){
-            if ((*it)->get_trigger() == 0 || (*it)->get_trigger()((*it)->get_handle(),params)){
+            if (((*it)->get_trigger() == 0 && is_monitored_process(addr.pgd)) || ((*it)->get_trigger() != 0 && (*it)->get_trigger()((*it)->get_handle(),params))){
                 callbacks_needed.push_back((*it));
             }
         }
 
         OptimizedInsBeginCallback *cb = new OptimizedInsBeginCallback();
-        memory_address_t addr;
-        addr.address = get_cpu_addr(params.insn_begin_params.cpu);
-        addr.pgd = get_pgd(params.insn_begin_params.cpu);
         cb->set_target_address(addr);
-        multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[OP_INSN_BEGIN_CB].find((Callback*)cb);
+        multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[OP_INSN_BEGIN_CB].lower_bound((Callback*)cb);
         delete cb;
+
         while (it != this->callbacks[OP_INSN_BEGIN_CB].end() && addr.address == ((OptimizedInsBeginCallback*)(*it))->get_target_address().address && addr.pgd == ((OptimizedInsBeginCallback*)(*it))->get_target_address().pgd){
             if ((*it)->get_trigger() == 0 || (*it)->get_trigger()((*it)->get_handle(),params)){
                 callbacks_needed.push_back((*it));
@@ -594,6 +637,7 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
     }
     else if (type == OPCODE_RANGE_CB){
         uint16_t opcode = params.opcode_range_params.opcode;
+        pyrebox_target_ulong pgd = get_pgd(params.opcode_range_params.cpu);
         OptimizedOpcodeRangeCallback *cb = new OptimizedOpcodeRangeCallback();
         opcode_range_t opcoderange;
         opcoderange.start_opcode = opcode;
@@ -604,16 +648,36 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
         delete cb;
         while (it != this->callbacks[type].end()) {
             if (((OptimizedOpcodeRangeCallback*)(*it))->get_opcode_range().start_opcode <= opcode){
-                if ((*it)->get_trigger() == 0 || (*it)->get_trigger()((*it)->get_handle(),params)){
+                if (((*it)->get_trigger() == 0 && is_monitored_process(pgd)) || ((*it)->get_trigger() != 0 && (*it)->get_trigger()((*it)->get_handle(),params))){
                     callbacks_needed.push_back((*it));
                 }
             }
             ++it;
         }
     }
-    else if (type >= BLOCK_BEGIN_CB)
-    {
-        //Here, just check the triggers. The callback should have been added only for monitored processes.
+    else if (type == BLOCK_END_CB || type == INSN_END_CB || type == MEM_READ_CB || type == MEM_WRITE_CB){
+        // Get the PGD        
+        pyrebox_target_ulong pgd = 0;
+        if (type == BLOCK_END_CB){
+            pgd = get_pgd(params.block_end_params.cpu);
+        } else if (type == INSN_END_CB) {
+            pgd = get_pgd(params.insn_end_params.cpu);
+        } else if (type == MEM_READ_CB){
+            pgd = get_pgd(params.mem_read_params.cpu);
+        } else if (type == MEM_WRITE_CB){
+            pgd = get_pgd(params.mem_write_params.cpu);
+        }
+        // Check if the process in monitored or not, only if there is no trigger
+        for (multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[type].begin(); it != this->callbacks[type].end(); ++it){
+            if (((*it)->get_trigger() == 0 && is_monitored_process(pgd)) || ((*it)->get_trigger() != 0 && (*it)->get_trigger()((*it)->get_handle(),params))){
+                callbacks_needed.push_back((*it));
+            }
+        }
+    }
+    else {
+        // The rest of the cases don't need the process to be monitored (VMI & system wide callbacks)
+        // Check if the process in monitored or not
+        //Here, just check the triggers. 
         for (multiset<Callback*,CompareCallbackP>::iterator it = this->callbacks[type].begin(); it != this->callbacks[type].end(); ++it){
             if ((*it)->get_trigger() == 0 || (*it)->get_trigger()((*it)->get_handle(),params)){
                 callbacks_needed.push_back((*it));
@@ -627,8 +691,6 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
         fflush(stdout);
         fflush(stderr);
         pthread_mutex_unlock(&pyrebox_mutex);
-
-
         return; 
     }
 
@@ -668,27 +730,30 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
             break;
        case MEM_READ_CB:
 #if TARGET_LONG_SIZE == 4
-            arg =  Py_BuildValue("(i,I,I)",
+            arg =  Py_BuildValue("(i,I,I,K)",
 #elif TARGET_LONG_SIZE == 8
-            arg =  Py_BuildValue("(i,K,K)",
+            arg =  Py_BuildValue("(i,K,K,K)",
 #else
 #error TARGET_LONG_SIZE undefined
 #endif
                                            params.mem_read_params.cpu_index,
                                            params.mem_read_params.vaddr,
-                                           params.mem_read_params.size);
+                                           params.mem_read_params.size,
+                                           params.mem_read_params.haddr);
             break;
        case MEM_WRITE_CB:
 #if TARGET_LONG_SIZE == 4
-            arg =  Py_BuildValue("(i,I,I)",
+            arg =  Py_BuildValue("(i,I,I,K,I)",
 #elif TARGET_LONG_SIZE == 8
-            arg =  Py_BuildValue("(i,K,K)",
+            arg =  Py_BuildValue("(i,K,K,K,K)",
 #else
 #error TARGET_LONG_SIZE undefined
 #endif
                                            params.mem_write_params.cpu_index,
                                            params.mem_write_params.vaddr,
-                                           params.mem_write_params.size);
+                                           params.mem_write_params.size,
+                                           params.mem_write_params.haddr,
+                                           params.mem_write_params.data);
             break;
        case KEYSTROKE_CB:
             arg =  Py_BuildValue("(I)",params.keystroke_params.keycode);
@@ -793,7 +858,8 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
 
     for (list<Callback*>::iterator it = callbacks_needed.begin(); it != callbacks_needed.end(); ++it)
     {
-        PyObject_CallObject((*it)->get_callback_function(),arg);
+        PyObject* ret = PyObject_CallObject((*it)->get_callback_function(),arg);
+        Py_XDECREF(ret);
     }
     //Once all callbacks have been triggered, just decref the arguments
     Py_XDECREF(arg);
@@ -802,7 +868,6 @@ void CallbackManager::deliver_callback(callback_type_t type, callback_params_t p
     fflush(stdout);
     fflush(stderr);
     pthread_mutex_unlock(&pyrebox_mutex);
-
 }
 
 void CallbackManager::clean_callbacks(){
@@ -937,42 +1002,53 @@ int CallbackManager::is_callback_needed(callback_type_t callback_type, pyrebox_t
         case OP_BLOCK_BEGIN_CB:
         case BLOCK_BEGIN_CB:
             //First, check if we have callbacks for the generic version 
-            if (this->callbacks[BLOCK_BEGIN_CB].size() > 0 && is_monitored_process(pgd)){
+            if (this->callbacks[BLOCK_BEGIN_CB].size() > 0){
                 return 1;
             }
             //Second, check if we have the optimized version
             cb = new OptimizedBlockBeginCallback();
             memory_address_t addr_block;
             addr_block.address = address;
-            addr_block.pgd = pgd;
+            addr_block.pgd = 0;
             ((OptimizedBlockBeginCallback*)cb)->set_target_address(addr_block);
-            it = this->callbacks[OP_BLOCK_BEGIN_CB].find((Callback*)cb);
+            it = this->callbacks[OP_BLOCK_BEGIN_CB].lower_bound((Callback*)cb);
             delete cb;
-            if (it != this->callbacks[OP_BLOCK_BEGIN_CB].end() && address == ((OptimizedBlockBeginCallback*)(*it))->get_target_address().address && pgd == ((OptimizedBlockBeginCallback*)(*it))->get_target_address().pgd){
+            // Only check the address, regardless of the PGD. PGD will be checked on callback delivery
+            if (it != this->callbacks[OP_BLOCK_BEGIN_CB].end() && address == ((OptimizedBlockBeginCallback*)(*it))->get_target_address().address){
                 return 1;
             }
             break;
         //Unified insn begin callback. Only INSN_BEGIN_CB should be queried, anyway
         case OP_INSN_BEGIN_CB:
         case INSN_BEGIN_CB:
+            //First, do a fast check over our internal callbacks
+            for (int i = 0; i < MAX_INTERNAL_CALLBACKS && internal_callbacks[i].callback_function != 0; ++i){
+                if (internal_callbacks[i].pc == address){
+                    return 1;
+                }
+            }
             //First, check if we have callbacks for the generic version 
-            if (this->callbacks[INSN_BEGIN_CB].size() > 0 && is_monitored_process(pgd)){
+            if (this->callbacks[INSN_BEGIN_CB].size() > 0){
                 return 1;
             }
+ 
             //Second, check if we have the optimized version
             cb = (Callback*) new OptimizedInsBeginCallback();
             memory_address_t addr;
             addr.address = address;
-            addr.pgd = pgd;
+            addr.pgd = 0;
             ((OptimizedInsBeginCallback*)cb)->set_target_address(addr);
-            it = this->callbacks[OP_INSN_BEGIN_CB].find((Callback*)cb);
+            it = this->callbacks[OP_INSN_BEGIN_CB].lower_bound((Callback*)cb);
             delete cb;
-            if (it != this->callbacks[OP_INSN_BEGIN_CB].end() && address == ((OptimizedInsBeginCallback*)(*it))->get_target_address().address && pgd == ((OptimizedInsBeginCallback*)(*it))->get_target_address().pgd){
+            // Only check the address, regardless of the PGD. PGD will be checked on callback delivery
+            if (it != this->callbacks[OP_INSN_BEGIN_CB].end() && address == ((OptimizedInsBeginCallback*)(*it))->get_target_address().address){
                 return 1;
             }
             break;
         case OPCODE_RANGE_CB:
-            if (this->callbacks[OPCODE_RANGE_CB].size() > 0 && is_monitored_process(pgd)){
+            // Consider only the number of callbacks, because the pgd will be checked at
+            // callback delivery
+            if (this->callbacks[OPCODE_RANGE_CB].size() > 0){
                 cb = (Callback*) new OptimizedOpcodeRangeCallback();
                 opcode_range_t opcoderange;
                 opcoderange.start_opcode = (uint16_t)(address & 0xFFFF);
@@ -1003,7 +1079,9 @@ int CallbackManager::is_callback_needed(callback_type_t callback_type, pyrebox_t
             return 1;
             break;
         default:
-            return (this->callbacks[callback_type].size() > 0 && is_monitored_process(pgd));
+            // Consider only the number of callbacks, because the pgd will be checked at
+            // callback delivery
+            return (this->callbacks[callback_type].size() > 0);
             break;
     }
     return 0;

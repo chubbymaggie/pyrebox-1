@@ -194,8 +194,12 @@ PyObject* r_va(PyObject *dummy, PyObject *args)
         } else{
             buffer = (uint8_t*) malloc(len * sizeof(uint8_t));
             if (buffer) {
-                qemu_virtual_memory_rw_with_pgd(pgd,addr,buffer,len,0);
-                result = Py_BuildValue("s#",buffer,len);
+                if (qemu_virtual_memory_rw_with_pgd(pgd,addr,buffer,len,0) == 0) {
+                    result = Py_BuildValue("s#",buffer,len);
+                } else
+                {
+                    PyErr_SetString(PyExc_RuntimeError, "Could not read memory");
+                }
                 free(buffer);
             } else
             {
@@ -308,6 +312,45 @@ PyObject* r_cpu(PyObject *dummy, PyObject *args)
     return result;
 }
 
+PyObject* r_ioport(PyObject *dummy, PyObject* args){
+    PyObject *result = 0;
+    uint16_t port;
+    uint8_t size;
+    if (PyArg_ParseTuple(args, "HB",&port,&size)){
+        if(size != 1 && size != 2 && size != 4) {
+            PyErr_SetString(PyExc_ValueError, "Incorrect function parameters: size must be 1, 2 or 4");
+        } else {
+            uint32_t val = qemu_ioport_read(port,size);
+            result = Py_BuildValue("I",val);
+        }
+    }
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "Incorrect function parameters: port,size");
+    }
+    return result;
+}
+PyObject* w_ioport(PyObject *dummy, PyObject* args){
+    PyObject *result = 0;
+    uint16_t port;
+    uint8_t size;
+    uint32_t val;
+    if (PyArg_ParseTuple(args, "HBI",&port,&size,&val)){
+        if(size != 1 && size != 2 && size != 4) {
+            PyErr_SetString(PyExc_ValueError, "Incorrect function parameters: size must be 1, 2 or 4");
+        } else {
+            qemu_ioport_write(port,size,val);
+            Py_INCREF(Py_None);
+            result = Py_None;
+        }
+    }
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "Incorrect function parameters: port,size,val");
+    }
+    return result;
+}
+
 //Write register
 PyObject* w_r(PyObject *dummy, PyObject *args)
 {
@@ -392,7 +435,7 @@ PyObject* va_to_pa(PyObject *dummy, PyObject *args)
     if (PyArg_ParseTuple(args, "II",&pgd, &addr)){
         result = Py_BuildValue("I",qemu_virtual_to_physical_with_pgd(pgd,addr));
 #elif TARGET_LONG_SIZE == 8
-    if (PyArg_ParseTuple(args, "K",&pgd, &addr)){
+    if (PyArg_ParseTuple(args, "KK",&pgd, &addr)){
         result = Py_BuildValue("K",qemu_virtual_to_physical_with_pgd(pgd,addr));
 #else
 #error TARGET_LONG_SIZE undefined
@@ -473,16 +516,19 @@ PyObject* py_get_num_cpus(PyObject *dummy, PyObject *args){
 PyObject* is_kernel_running(PyObject *dummy, PyObject *args){
     int cpu_index;
     if (PyArg_ParseTuple(args, "i", &cpu_index)){
-        if (qemu_is_kernel_running(cpu_index)){
-            Py_INCREF(Py_True);
-            return Py_True;
-        } else{
-            Py_INCREF(Py_False);
-            return Py_False;
+        int result = qemu_is_kernel_running(cpu_index);
+        switch(result){
+            case 0:
+                Py_INCREF(Py_False);
+                return Py_False;
+            case 1:
+                Py_INCREF(Py_True);
+                return Py_True;
+            case -1:
+                PyErr_SetString(PyExc_ValueError, "Incorrect cpu index specified");
+                return 0;
         }
-    }
-    else
-    {
+    } else {
         PyErr_SetString(PyExc_ValueError, "Incorrect function parameters: cpu_index");
     }
     return 0;
@@ -829,6 +875,111 @@ PyObject* py_get_os_bits(PyObject *dummy, PyObject *args){
     return result;
 }
 
+PyObject* py_import_module(PyObject *dummy, PyObject *args){
+    char* name;
+    int length;
+    if (PyArg_ParseTuple(args, "s#",&name,&length)){
+
+        PyObject* py_main_module, *py_global_dict;
+        PyObject* py_import,*py_args_tuple;
+        PyObject *module_path = PyString_FromString(name);
+        // Get a reference to the main module and global dictionary
+        py_main_module = PyImport_AddModule("__main__");
+        py_global_dict = PyModule_GetDict(py_main_module);
+        //Call the module import function
+        py_import = PyDict_GetItemString(py_global_dict, "import_module");
+        py_args_tuple = PyTuple_New(1);
+        PyTuple_SetItem(py_args_tuple, 0, module_path); 
+        PyObject* ret = PyObject_CallObject(py_import,py_args_tuple);
+        Py_XDECREF(ret);
+        Py_DECREF(py_args_tuple);
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "Incorrect function parameter: module name");
+        return 0;
+    }
+}
+
+PyObject* py_unload_module(PyObject *dummy, PyObject *args){
+    unsigned int module_id;
+    if (PyArg_ParseTuple(args, "I",&module_id)){
+        PyObject* py_main_module, *py_global_dict;
+        PyObject* py_import,*py_args_tuple;
+        PyObject *module_hdl = PyInt_FromLong(module_id);
+        // Get a reference to the main module and global dictionary
+        py_main_module = PyImport_AddModule("__main__");
+        py_global_dict = PyModule_GetDict(py_main_module);
+        //Call the module import function
+        py_import = PyDict_GetItemString(py_global_dict, "unload_module");
+        py_args_tuple = PyTuple_New(1);
+        PyTuple_SetItem(py_args_tuple, 0, module_hdl); 
+        PyObject* ret = PyObject_CallObject(py_import,py_args_tuple);
+        Py_XDECREF(ret);
+        Py_DECREF(py_args_tuple);
+        commit_deferred_callback_removes();
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "Incorrect function parameter: module_id");
+    }
+    return 0;
+}
+
+PyObject* py_reload_module(PyObject *dummy, PyObject *args){
+    unsigned int module_id;
+    if (PyArg_ParseTuple(args, "I",&module_id)){
+        PyObject* py_main_module, *py_global_dict;
+        PyObject* py_import,*py_args_tuple;
+        PyObject *module_hdl = PyInt_FromLong(module_id);
+        // Get a reference to the main module and global dictionary
+        py_main_module = PyImport_AddModule("__main__");
+        py_global_dict = PyModule_GetDict(py_main_module);
+        //Call the module import function
+        py_import = PyDict_GetItemString(py_global_dict, "reload_module");
+        py_args_tuple = PyTuple_New(1);
+        PyTuple_SetItem(py_args_tuple, 0, module_hdl);
+        PyObject* ret = PyObject_CallObject(py_import,py_args_tuple);
+        Py_XDECREF(ret);
+        Py_DECREF(py_args_tuple);
+        commit_deferred_callback_removes();
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    else
+    {
+        PyErr_SetString(PyExc_ValueError, "Incorrect function parameter: module_id");
+    }
+    return 0;
+}
+
+PyObject* py_get_loaded_modules(PyObject *dummy, PyObject *args){
+    PyObject* py_main_module, *py_global_dict;
+    PyObject* py_import,*py_args_tuple;
+    // Get a reference to the main module and global dictionary
+    py_main_module = PyImport_AddModule("__main__");
+    py_global_dict = PyModule_GetDict(py_main_module);
+    //Call the module import function
+    py_import = PyDict_GetItemString(py_global_dict, "get_loaded_modules");
+    py_args_tuple = PyTuple_New(0);
+    PyObject* ret = PyObject_CallObject(py_import,py_args_tuple);
+    //Dec ref the argument list
+    Py_DECREF(py_args_tuple);
+    //Dont decrement the reference for the return, cause we pass
+    //it as result
+    if (ret){
+        return ret;
+    } else {
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+}
+
+
 PyMethodDef api_methods[] = {
       {"register_callback", register_callback, METH_VARARGS, "register_callback"}, 
       {"unregister_callback", unregister_callback, METH_VARARGS, "unregister_callback"},
@@ -839,6 +990,8 @@ PyMethodDef api_methods[] = {
       {"w_va",w_va, METH_VARARGS, "w_va"},
       {"w_r",w_r, METH_VARARGS, "w_r"},
       {"w_sr",w_sr, METH_VARARGS, "w_sr"},
+      {"r_ioport",r_ioport,METH_VARARGS,"r_ioport"},
+      {"w_ioport",w_ioport,METH_VARARGS,"w_ioport"},
       {"va_to_pa",va_to_pa, METH_VARARGS, "va_to_pa"},
       {"start_monitoring_process",start_monitoring_process, METH_VARARGS, "start_monitoring_process"},
       {"is_monitored_process",py_is_monitored_process, METH_VARARGS, "is_monitored_process"},
@@ -860,6 +1013,10 @@ PyMethodDef api_methods[] = {
       {"get_num_cpus",py_get_num_cpus, METH_VARARGS, "get_num_cpus"},
       {"plugin_print_internal",py_print_plugin, METH_VARARGS, "plugin_print_internal"},
       {"get_os_bits",py_get_os_bits,METH_VARARGS,"get_os_bits"},
+      {"import_module",py_import_module,METH_VARARGS,"import_module"},
+      {"unload_module",py_unload_module,METH_VARARGS,"unload_module"},
+      {"reload_module",py_reload_module,METH_VARARGS,"reload_module"},
+      {"get_loaded_modules",py_get_loaded_modules,METH_VARARGS,"get_loaded_modules"},
       { NULL, NULL, 0, NULL }
     };
 

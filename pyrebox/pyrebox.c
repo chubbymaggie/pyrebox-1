@@ -55,7 +55,7 @@ void clear_targets(void){
   clear_monitored_processes();
 }
 
-int pyrebox_init(void){
+int pyrebox_init(const char *pyrebox_conf_str){
 
   //Initialize mutex to call python code, which may sometime be thread unsafe
   if (pthread_mutex_init(&pyrebox_mutex, NULL) != 0){      
@@ -71,6 +71,7 @@ int pyrebox_init(void){
   //Python references
   PyObject* py_main_module, *py_global_dict;
   PyObject* py_init = 0;
+  PyObject* py_init_plugins = 0;
 
   //XXX: Needed as a workaround to a python bug: 
   //https://mail.python.org/pipermail/new-bugs-announce/2008-November/003322.html
@@ -109,6 +110,8 @@ int pyrebox_init(void){
       free(init_fname);
   }
 
+  clear_targets();
+
   // Get a reference to the main module and global dictionary
   py_main_module = PyImport_AddModule("__main__");
   py_global_dict = PyModule_GetDict(py_main_module);
@@ -118,23 +121,40 @@ int pyrebox_init(void){
   PyObject *platform_str = PyString_FromString(target_platform);
   PyObject *root_path_str = PyString_FromString(ROOT_PATH);
   PyObject *volatility_path_str = PyString_FromString(VOLATILITY_PATH);
+  PyObject *conf_name_str = PyString_FromString(pyrebox_conf_str);
 
-  py_args_tuple = PyTuple_New(3);
+  py_args_tuple = PyTuple_New(4);
   PyTuple_SetItem(py_args_tuple, 0, platform_str); 
   PyTuple_SetItem(py_args_tuple, 1, root_path_str); 
   PyTuple_SetItem(py_args_tuple, 2, volatility_path_str); 
+  PyTuple_SetItem(py_args_tuple, 3, conf_name_str);
 
   py_init = PyDict_GetItemString(py_global_dict, "init");
   PyObject* vol_profile = PyObject_CallObject(py_init,py_args_tuple);
   if (vol_profile == 0 || vol_profile == Py_None){
       return 1;
   }
+  Py_DECREF(py_args_tuple);
+
   PyObject* vol_prof_repr = PyObject_Repr(vol_profile);
   const char* s = PyString_AsString(vol_prof_repr);
   //Set the vol profile in vmi.cpp
   vmi_init(s);
 
-  clear_targets();
+  // Now, we can decref vol_profile
+  Py_XDECREF(vol_profile);
+
+  py_args_tuple = PyTuple_New(0);
+  //Now that we initialized the VMI, init the plugins
+  py_init_plugins = PyDict_GetItemString(py_global_dict, "init_plugins");
+  PyObject* result = PyObject_CallObject(py_init_plugins, py_args_tuple);
+  if (result == 0 || result == Py_None){
+      return 1;
+  }
+  // We can decref the args tuple
+  Py_DECREF(py_args_tuple);
+  // We can decref the result
+  Py_XDECREF(result);
 
   return 0;
 };

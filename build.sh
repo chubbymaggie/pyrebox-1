@@ -1,16 +1,16 @@
 #!/bin/bash
 
-#-------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
 #
 #   Copyright (C) 2017 Cisco Talos Security Intelligence and Research Group
 #
-#   PyREBox: Python scriptable Reverse Engineering Sandbox 
-#   Author: Xabier Ugarte-Pedrero 
-#   
+#   PyREBox: Python scriptable Reverse Engineering Sandbox
+#   Author: Xabier Ugarte-Pedrero
+#
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2 as
-#   published by the Free Software Foundation.
-#   
+#   published by the Free Software Foundation
+#
 #   This program is distributed in the hope that it will be useful,
 #   but WITHOUT ANY WARRANTY; without even the implied warranty of
 #   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -20,8 +20,8 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
-#   
-#-------------------------------------------------------------------------------
+#
+# -------------------------------------------------------------------------------
 
 root_path=$(pwd)
 pyrebox_path=$root_path/pyrebox
@@ -30,7 +30,7 @@ qemu_path=$root_path/qemu
 show_help="no"
 debug="no"
 rebuild_vol="no"
-rebuild_qemu="no"
+reconfigure="no"
 jobs=8
 
 RED='\033[0;31m'
@@ -44,9 +44,7 @@ for opt do
   ;;
   --debug) debug="yes"
   ;;
-  --rebuild_qemu) rebuild_qemu="yes"
-  ;;
-  --rebuild_volatility) rebuild_vol="yes"
+  --reconfigure) reconfigure="yes"
   ;;
   --jobs=*) jobs=$optarg
   ;;
@@ -64,40 +62,13 @@ echo "Standard options:"
 echo "  --help                       print this message"
 echo "  --debug                      compile for debug"
 echo "  --jobs=n                     build using n parallel processes"
-echo "  --rebuild_qemu               delete current qemu/ and rebuild it"
-echo "  --rebuild_volatility         delete current volatility/ and rebuild it"
+echo "  --reconfigure                reconfigure pyrebox"
 echo ""
 exit 1
 fi
 
 #----------------------- QEMU -----------------------
-if [ x"${rebuild_qemu}" = xyes ]; then
-    rm -rf $qemu_path
-fi
-
-if ! [ -d "${qemu_path}" ]
-then
-    echo -e "\n${GREEN}[*] Cloning qemu...${NC}\n"
-    git clone git://git.qemu.org/qemu.git
-    if ! [ -d "${qemu_path}" ]; then
-        echo -e "\n${RED}[!] QEMU could not be cloned from git.qemu.org!${NC}\n"
-        exit 1
-    fi
-    cd $qemu_path 
-    git checkout v2.9.0
-    if [ $? -ne 0 ]; then
-        echo -e "\n${RED}[!] Could not checkout the appropriate version of QEMU${NC}\n"
-        exit 1
-    fi
-    echo -e "\n${GREEN}[*] Patching qemu...${NC}\n"
-    cd $root_path
-    patch -p0 < $pyrebox_path/third_party/qemu/qemu.patch
-    if [ $? -ne 0 ]; then
-        echo -e "\n${RED}[!] Could not patch QEMU${NC}\n"
-        exit 1
-    fi
-    ln -s ../pyrebox qemu/pyrebox
-
+if [ x"${reconfigure}" = xyes ] || [ ! -f ${qemu_path}/config-host.mak ]; then
     echo -e "\n${GREEN}[*] Configuring qemu...${NC}\n"
     cd ${qemu_path}
     qemu_configure_flags=""
@@ -122,43 +93,6 @@ then
     echo "#define PYREBOX_PATH \"$pyrebox_path\"" >> $config_h
     echo "#define ROOT_PATH \"$root_path\"" >> $config_h
 
-fi
-
-
-if [ x"${rebuild_vol}" = xyes ]; then
-    rm -rf $volatility_path
-fi
-
-#----------------------- VOLATILITY -----------------------
-
-cd ${root_path}
-
-if ! [ -d "${volatility_path}" ] 
-then
-    echo -e "\n${GREEN}[*] Cloning volatility...${NC}\n"
-    git clone https://github.com/volatilityfoundation/volatility volatility
-    if ! [ -d "${volatility_path}" ]; then
-        echo -e "\n${RED}[!] Volatility could not be cloned from github!${NC}\n"
-        exit 1
-    fi
-    cd $volatility_path
-    git checkout 2.6
-    if [ $? -ne 0 ]; then
-        echo -e "\n${RED}[!] Could not checkout the appropriate version of volatility${NC}\n"
-        exit 1 
-    fi
-    echo -e "\n${GREEN}[*] Patching volatility...${NC}\n"
-    cd $root_path
-    patch -p0 < $pyrebox_path/third_party/volatility/conf.py.patch
-    if [ $? -ne 0 ]; then
-        echo -e "\n${RED}[!] Could not patch volatility${NC}\n"
-        exit 1
-    fi
-    cp $pyrebox_path/third_party/panda/pmemaddressspace.py $volatility_path/volatility/plugins/addrspaces
-    if [ $? -ne 0 ]; then
-        echo -e "\n${RED}[!] Could not patch volatility${NC}\n"
-        exit 1 
-    fi
 fi
 
 #----------------------- PYREBOX -----------------------

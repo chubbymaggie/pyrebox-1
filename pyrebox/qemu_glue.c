@@ -44,8 +44,11 @@
 #include "qemu/main-loop.h"
 #include "monitor/monitor.h"
 #include "qemu/thread.h"
+#include "exec/ioport.h"
+#include "hmp.h"
 
 #include "qemu_glue.h"
+#include "qemu_glue_callbacks_flush.h"
 
 /**************************************************** DEFINITIONS ************************************************/
 
@@ -274,10 +277,11 @@ int qemu_virtual_memory_rw(qemu_cpu_opaque_t *cpu_opaque, pyrebox_target_ulong a
 
 int qemu_virtual_memory_rw_with_pgd(pyrebox_target_ulong pgd, pyrebox_target_ulong addr,
                         uint8_t *buf, pyrebox_target_ulong len, int is_write){
+    int result = 0;
     //First try to do it using the running CPU with the corresponding pgd
     qemu_cpu_opaque_t running_cpu = get_qemu_cpu_with_pgd(pgd);
     if (running_cpu != NULL){
-        qemu_virtual_memory_rw(running_cpu,addr,buf,len,is_write); 
+        result = qemu_virtual_memory_rw(running_cpu,addr,buf,len,is_write);
     }
     else{//If it didnt work, we force the pgd 
         CPUState* cpu = first_cpu;
@@ -286,7 +290,7 @@ int qemu_virtual_memory_rw_with_pgd(pyrebox_target_ulong pgd, pyrebox_target_ulo
         CPUX86State* env = &(X86_CPU(cpu)->env);
         pyrebox_target_ulong old_pgd = env->cr[3];
         env->cr[3] = pgd;
-        qemu_virtual_memory_rw((qemu_cpu_opaque_t)cpu,addr,buf,len,is_write);
+        result = qemu_virtual_memory_rw((qemu_cpu_opaque_t)cpu,addr,buf,len,is_write);
         env->cr[3] = old_pgd;
 #elif defined(TARGET_AARCH64)
 #error "Architecture not supported yet"
@@ -294,7 +298,7 @@ int qemu_virtual_memory_rw_with_pgd(pyrebox_target_ulong pgd, pyrebox_target_ulo
 #error "Architecture not supported yet"
 #endif
     }
-    return 0;
+    return result;
 }
 pyrebox_target_ulong qemu_virtual_to_physical_with_pgd(pyrebox_target_ulong pgd, pyrebox_target_ulong addr){
     qemu_cpu_opaque_t running_cpu = get_qemu_cpu_with_pgd(pgd);
@@ -332,6 +336,48 @@ pyrebox_target_ulong qemu_virtual_to_physical_with_pgd(pyrebox_target_ulong pgd,
     }
 }
 
+uint32_t qemu_ioport_read(uint16_t address, uint8_t size){
+    //If the size parameter is incorrect, force it to be 1.
+    if (size != 1 && size != 2 && size != 4){
+        size = 1;
+    }
+    uint32_t val = 0;
+    
+    switch(size) {
+    default:
+    case 1:
+        val = cpu_inb(address);
+        break;
+    case 2:
+        val = cpu_inw(address);
+        break;
+    case 4:
+        val = cpu_inl(address);
+        break;
+    }
+    return val;
+}
+
+void qemu_ioport_write(uint16_t address, uint8_t size, uint32_t value){
+
+    //If the size parameter is incorrect, force it to be 1.
+    if (size != 1 && size != 2 && size != 4){
+        size = 1;
+    }
+
+    switch (size) {
+    default:
+    case 1:
+        cpu_outb(address, value);
+        break;
+    case 2:
+        cpu_outw(address, value);
+        break;
+    case 4:
+        cpu_outl(address, value);
+        break;
+    }
+}
 
 int read_register_convert(qemu_cpu_opaque_t cpu_opaque, register_num_t reg_num, pyrebox_target_ulong* out_val){
     assert(out_val != 0);
@@ -471,6 +517,7 @@ int write_register_convert(qemu_cpu_opaque_t cpu_opaque, register_num_t reg_num,
 #elif defined(TARGET_ARM) && !defined(TARGET_AARCH64)
 #error "Architecture not supported yet"
 #endif
+    int changed = 0;
     if (reg_num < RN_LAST && register_type[reg_num] == RT_REGULAR)
     {
        switch(reg_num){
@@ -500,7 +547,11 @@ int write_register_convert(qemu_cpu_opaque_t cpu_opaque, register_num_t reg_num,
                 env->regs[R_EDI] = val;
                 break;
            case RN_EIP:
+                changed = ((env->eip) != val);
                 env->eip = val;
+                if (changed) {
+                    pyrebox_cpu_loop_exit();
+                }
                 break;
            case RN_EFLAGS:
                 env->eflags = val;
@@ -531,7 +582,11 @@ int write_register_convert(qemu_cpu_opaque_t cpu_opaque, register_num_t reg_num,
                 env->regs[R_EDI] = val;
                 break;
            case RN_RIP:
+                changed = ((env->eip) != val);
                 env->eip = val;
+                if (changed) {
+                    pyrebox_cpu_loop_exit();
+                }
                 break;
            case RN_RFLAGS:
                 env->eflags = val;
@@ -681,6 +736,17 @@ pyrebox_target_ulong get_pgd(qemu_cpu_opaque_t cpu_opaque){
 #endif
 }
 
+pyrebox_target_ulong get_stack_pointer(qemu_cpu_opaque_t cpu_opaque){
+#if defined(TARGET_I386) || defined(TARGET_X86_64)
+    CPUX86State* env = &(X86_CPU((CPUState*)cpu_opaque)->env);
+    return (pyrebox_target_ulong) env->regs[R_ESP];
+#elif defined(TARGET_AARCH64)
+#error "Architecture not supported yet"
+#elif defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+#error "Architecture not supported yet"
+#endif
+}
+
 #if defined(TARGET_I386) || defined(TARGET_X86_64)
 pyrebox_target_ulong get_fs_base(qemu_cpu_opaque_t cpu_opaque){
     CPUX86State* env = &(X86_CPU((CPUState*)cpu_opaque)->env);
@@ -695,10 +761,17 @@ int get_qemu_cpu_protected_mode(qemu_cpu_opaque_t cpu_opaque){
     CPUX86State* env = &(X86_CPU((CPUState*)cpu_opaque)->env);
     return (env->cr[0] & 0x1);
 };
+
+//Returns 0 if not running in kernel mode, 1 if running in kernel mode,
+//-1 if the cpu index is incorrect
 int qemu_is_kernel_running(int cpu_index){
     qemu_cpu_opaque_t cpu = get_qemu_cpu(cpu_index);
-    CPUX86State* env = &(X86_CPU((CPUState*)cpu)->env);
-    return((env->hflags & HF_CPL_MASK) == 0);
+    if(cpu != NULL){
+        CPUX86State* env = &(X86_CPU((CPUState*)cpu)->env);
+        return((env->hflags & HF_CPL_MASK) == 0);
+    } else {
+        return -1;
+    }
 }
 #endif
 
@@ -821,12 +894,9 @@ void pyrebox_save_vm(char* name)
 }
 void pyrebox_load_vm(char* name)
 {
-    int saved_vm_running  = runstate_is_running();
-    vm_stop(RUN_STATE_RESTORE_VM);
-    int load_result = load_vmstate(name); 
-    if (load_result == 0 && saved_vm_running) {
-        vm_start();
-    }
+    QDict* qdict = qdict_new();
+    qdict_put_obj(qdict, "name", QOBJECT(qstring_from_str(name)));
+    hmp_loadvm(cur_mon,qdict);
 }
 
 /* Extracted from Panda: memory-access.c. See third_party/panda/ */
@@ -879,18 +949,3 @@ uint64_t get_memory_size(void)
     return 0;
 }
 /* End of - Extracted from Panda: memory-access.c. See third_party/panda/ */
-
-void pyrebox_mutex_lock_iothread(void){
-    qemu_mutex_lock_iothread();
-}
-void pyrebox_mutex_unlock_iothread(void){
-    qemu_mutex_unlock_iothread();
-}
-int pyrebox_mutex_iothread_locked(void){
-    if (qemu_mutex_iothread_locked()){
-        return 1;
-    } else {
-        return 0;
-    }
-}
-

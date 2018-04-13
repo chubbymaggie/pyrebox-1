@@ -18,6 +18,7 @@
 #
 import os
 import sys
+sys.path.insert(0, os.path.abspath('../'))
 sys.path.insert(0, os.path.abspath('../pyrebox'))
 
 
@@ -69,7 +70,7 @@ language = None
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This patterns also effect to html_static_path and html_extra_path
-exclude_patterns = ['.docs_build', 'Thumbs.db', '.DS_Store']
+exclude_patterns = ['.docs_build', 'Thumbs.db', '.DS_Store', "qemu", "volatility"]
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
@@ -154,4 +155,10 @@ texinfo_documents = [
 ]
 
 
+def skip(app, what, name, obj, skip, options):
+    if name == "__init__":
+        return False
+    return skip
 
+def setup(app):
+    app.connect("autodoc-skip-member", skip)

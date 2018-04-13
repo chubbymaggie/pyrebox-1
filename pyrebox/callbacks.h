@@ -27,6 +27,8 @@
 #define INV_ADDR -1
 #define INV_PGD -1
 
+#define MAX_INTERNAL_CALLBACKS 16
+
 #ifdef __cplusplus
 extern "C" {
 #endif//__cplusplus
@@ -86,15 +88,18 @@ typedef struct insn_end_params {
 typedef struct mem_read_params {
     int cpu_index;
     pyrebox_target_ulong vaddr;
-    pyrebox_target_ulong paddr;
+    uintptr_t haddr;
     pyrebox_target_ulong size;
+    qemu_cpu_opaque_t cpu;
 } mem_read_params_t;
 
 typedef struct mem_write_params {
     int cpu_index;
     pyrebox_target_ulong vaddr;
-    pyrebox_target_ulong paddr;
+    uintptr_t haddr;
     pyrebox_target_ulong size;
+    pyrebox_target_ulong data;
+    qemu_cpu_opaque_t cpu;
 } mem_write_params_t;
 
 typedef struct keystroke_params {
@@ -220,6 +225,20 @@ void* get_trigger_var(callback_handle_t callback_handle, const char* var);
 void InitCallbacks(void);
 void FinalizeCallbacks(void);
 
+typedef unsigned int internal_callback_handle_t;
+
+//Internal callbacks, we can place up to a MAX number of internal callbacks
+//that are delivered as OptimizedInsn callbacks, for VMI related actions.
+typedef struct internal_callback{
+    pyrebox_target_ulong pgd;
+    pyrebox_target_ulong pc;
+    callback_t callback_function; 
+} internal_callbacks_t;
+
+internal_callback_handle_t add_internal_callback(pyrebox_target_ulong pgd, pyrebox_target_ulong pc, callback_t callback_function);
+// We do not implement an internal callback removal, since these callbacks are supposed to be static for VMI related
+// actions, so there is no need to handle callback removal.
+//void remove_internal_callback(internal_callback_handle_t callback_handle);
 
 #ifdef __cplusplus
 };
@@ -281,7 +300,7 @@ class OptimizedInsBeginCallback : public Callback
             OptimizedInsBeginCallback* casted_rhs = dynamic_cast<OptimizedInsBeginCallback*>(rhs);
             //Exit if it does not belong to the same class
             assert(casted_rhs != 0);
-            return ((this->target_address.pgd < casted_rhs->target_address.pgd) || (this->target_address.pgd == casted_rhs->target_address.pgd && this->target_address.address < casted_rhs->target_address.address));
+            return ((this->target_address.address < casted_rhs->target_address.address) || (this->target_address.address == casted_rhs->target_address.address && this->target_address.pgd < casted_rhs->target_address.pgd));
         }
 
     protected:
@@ -301,7 +320,7 @@ class OptimizedBlockBeginCallback : public Callback
             OptimizedBlockBeginCallback* casted_rhs = dynamic_cast<OptimizedBlockBeginCallback*>(rhs);
             //Exit if it does not belong to the same class
             assert(casted_rhs != 0);
-            return ((this->target_address.pgd < casted_rhs->target_address.pgd) || (this->target_address.pgd == casted_rhs->target_address.pgd && this->target_address.address < casted_rhs->target_address.address));
+            return ((this->target_address.address < casted_rhs->target_address.address) || (this->target_address.address == casted_rhs->target_address.address && this->target_address.pgd < casted_rhs->target_address.pgd));
         }
 
     protected:

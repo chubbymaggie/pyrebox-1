@@ -42,7 +42,7 @@ typedef enum eprocess_offset_index{
 
 extern unsigned int eprocess_offsets[LimitWindows][LastOffset];
 
-void windows_vmi_init(os_index_t vol_profile);
+void windows_vmi_init(os_index_t os_index);
 void windows_vmi_tlb_callback(pyrebox_target_ulong pgd, os_index_t os_index);
 void windows_vmi_context_change_callback(pyrebox_target_ulong old_pgd,pyrebox_target_ulong new_pgd, os_index_t os_index);
 

@@ -61,6 +61,7 @@ PyREBox adds four commands on top of QEMU:
 ``import_module`` Load a PyREBox script (module)
 ``list_modules``  List loaded PyREBox scripts (modules)
 ``unload_module`` Unload a PyREBox script (module)
+``reload_module`` Reload a PyREBox script (module)
 ================= ==================================================================================
 
 PyREBox shell commands
@@ -119,7 +120,7 @@ Introspection
 **Commmand**  **Description**
 ------------- ---------------------------------------------------------------------------------- 
 ``ps``        List running processes.
-``lm``        List modules for a process. Specify process by pid, name, or cr3.
+``lm``        List modules for a process. Specify process by pid, name, or cr3. Specify '0', 'System' or 'kernel' in order to list kernel modules
 ============= ==================================================================================
 
 Machine state inspection and manipulation
@@ -135,6 +136,8 @@ Machine state inspection and manipulation
 ``eb,ew,ed,eq`` Overwrite byte,word,dword,qword of data in memory. Accepts HEX, ANSI strings and unicode strings.
 ``write``       Overwrite any size of data in memory. Accepts HEX, ANSI strings and unicode strings. 
 ``r``           Display and/or manipulate a register. See help.
+``ior[b|w|d]``  Read IO port address (byte, word, dword).
+``iow[b|w|d]``  Write IO port address (byte, word, dword).
 =============== ==================================================================================
 
 Symbols
